@@ -45,8 +45,10 @@ python -m todo list --file work.json
 python -m todo --file ~/todo-work.json list
 ```
 
-If the store file is not valid (bad JSON, or a task with a missing or malformed `created`, `due` or
-`priority`), every command stops with `error: invalid store file <path>: <reason>`. The file is left unchanged.
+If the store file is not valid, CLI commands fail and leave the file unchanged. Bad JSON gives
+`error: invalid JSON in <path>: ...`. A structural problem, such as a task with a missing or malformed
+`created`, `due` or `priority`, gives `error: invalid store file <path>: <reason>`. The REST server keeps
+running and answers each request with `500`.
 
 ## CLI commands
 
