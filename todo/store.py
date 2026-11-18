@@ -1,0 +1,351 @@
+"""JSON-file backed task store."""
+
+import json
+import os
+import re
+import tempfile
+import threading
+from datetime import date, datetime, timezone
+from pathlib import Path
+
+from todo.errors import StoreError, TaskNotFound, ValidationError
+
+FILE_VERSION = 1
+DEFAULT_FILENAME = ".todo.json"
+ENV_VAR = "TODO_FILE"
+CREATED_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+DUE_RE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+PRIORITIES = ("low", "normal", "high")
+DEFAULT_PRIORITY = "normal"
+_PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
+STATUSES = (None, "open", "done")
+SORTS = (None, "created", "due", "priority")
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _clean_title(title) -> str:
+    if not isinstance(title, str):
+        raise ValidationError("title must be a string")
+    title = title.strip()
+    if not title:
+        raise ValidationError("title must not be empty")
+    return title
+
+
+def _clean_due(due):
+    """Return a valid ``YYYY-MM-DD`` string or None; raise ValidationError otherwise."""
+    if due is None:
+        return None
+    if not isinstance(due, str) or not DUE_RE.fullmatch(due):
+        raise ValidationError(f"due must be a date in YYYY-MM-DD format, got {due!r}")
+    try:
+        date.fromisoformat(due)
+    except ValueError:
+        raise ValidationError(f"due is not a valid calendar date: {due!r}") from None
+    return due
+
+
+def _clean_priority(priority) -> str:
+    if not isinstance(priority, str) or priority not in PRIORITIES:
+        raise ValidationError(
+            f"priority must be one of {', '.join(PRIORITIES)}, got {priority!r}")
+    return priority
+
+
+def _public(task: dict) -> dict:
+    """Fresh copy of a stored task with S3 defaults backfilled (legacy records)."""
+    out = dict(task)
+    out.setdefault("due", None)
+    out.setdefault("priority", DEFAULT_PRIORITY)
+    return out
+
+
+def _resolve_path(path) -> Path:
+    if path is not None:
+        return Path(path).expanduser()
+    env = os.environ.get(ENV_VAR)
+    if env:
+        return Path(env).expanduser()
+    return Path(os.path.expanduser("~")) / DEFAULT_FILENAME
+
+
+class TaskStore:
+    """Persist tasks in a JSON file. Every call re-reads the file."""
+
+    CREATE_FIELDS = ("title", "due", "priority")
+    UPDATE_FIELDS = ("title", "done", "due", "priority")
+
+    def __init__(self, path=None):
+        self.path = _resolve_path(path)
+        self._lock = threading.Lock()
+
+    # -- file I/O -----------------------------------------------------------
+    def _empty(self) -> dict:
+        return {"version": FILE_VERSION, "next_id": 1, "tasks": []}
+
+    def _load(self) -> dict:
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                text = fh.read()
+        except FileNotFoundError:
+            return self._empty()
+        except OSError as exc:
+            raise StoreError(f"cannot read {self.path}: {exc.strerror or exc}") from exc
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
+            raise StoreError(f"invalid JSON in {self.path}: {exc}") from exc
+        self._check_structure(data)
+        return data
+
+    def _check_structure(self, data) -> None:
+        def bad(why):
+            raise StoreError(f"invalid store file {self.path}: {why}")
+
+        if not isinstance(data, dict):
+            bad("top level must be an object")
+        tasks = data.get("tasks")
+        next_id = data.get("next_id")
+        if not isinstance(tasks, list):
+            bad("'tasks' must be a list")
+        if not isinstance(next_id, int) or isinstance(next_id, bool) or next_id < 1:
+            bad("'next_id' must be a positive integer")
+        seen = set()
+        for t in tasks:
+            if not isinstance(t, dict):
+                bad("each task must be an object")
+            tid = t.get("id")
+            if not isinstance(tid, int) or isinstance(tid, bool):
+                bad("task 'id' must be an integer")
+            if not isinstance(t.get("title"), str) or not isinstance(t.get("done"), bool):
+                bad(f"task {tid} has invalid 'title' or 'done'")
+            created = t.get("created")
+            if not isinstance(created, str) or not CREATED_RE.match(created):
+                bad(f"task {tid} has invalid 'created'")
+            if "due" in t:
+                try:
+                    _clean_due(t["due"])
+                except ValidationError:
+                    bad(f"task {tid} has invalid 'due'")
+            if "priority" in t and t["priority"] not in PRIORITIES:
+                bad(f"task {tid} has invalid 'priority'")
+            if tid in seen:
+                bad(f"duplicate task id {tid}")
+            seen.add(tid)
+            if tid >= next_id:
+                bad(f"task id {tid} is not below 'next_id'")
+
+    def _save(self, data: dict) -> None:
+        parent = self.path.parent
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=self.path.name + ".", suffix=".tmp", dir=parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=2)
+                    fh.write("\n")
+                os.replace(tmp, self.path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            raise StoreError(f"cannot write {self.path}: {exc.strerror or exc}") from exc
+
+    @staticmethod
+    def _find(data: dict, task_id) -> dict:
+        for t in data["tasks"]:
+            if t["id"] == task_id and type(task_id) is not bool:
+                return t
+        raise TaskNotFound(task_id)
+
+    # -- validation -----------------------------------------------------------
+    def _validate_create(self, title, fields: dict) -> dict:
+        """Shared create-path validator (used by add and restore).
+
+        Returns the clean ``{title, due, priority}`` dict; ``None`` for due or
+        priority means the default (no due date, priority "normal").
+        """
+        unknown = sorted(k for k in fields if k == "title" or k not in self.CREATE_FIELDS)
+        if unknown:
+            raise ValidationError(f"unknown field(s): {', '.join(unknown)}")
+        priority = fields.get("priority")
+        return {
+            "title": _clean_title(title),
+            "due": _clean_due(fields.get("due")),
+            "priority": DEFAULT_PRIORITY if priority is None else _clean_priority(priority),
+        }
+
+    def _validate_update(self, fields: dict) -> dict:
+        if not fields:
+            raise ValidationError("no fields to update")
+        unknown = sorted(k for k in fields if k not in self.UPDATE_FIELDS)
+        if unknown:
+            raise ValidationError(f"unknown field(s): {', '.join(unknown)}")
+        clean = {}
+        if "title" in fields:
+            clean["title"] = _clean_title(fields["title"])
+        if "done" in fields:
+            if not isinstance(fields["done"], bool):
+                raise ValidationError("done must be a boolean")
+            clean["done"] = fields["done"]
+        if "due" in fields:
+            clean["due"] = _clean_due(fields["due"])  # None clears
+        if "priority" in fields:
+            clean["priority"] = _clean_priority(fields["priority"])  # None rejected
+        return clean
+
+    # -- public API ---------------------------------------------------------
+    def add(self, title, **fields) -> dict:
+        clean = self._validate_create(title, fields)
+        with self._lock:
+            data = self._load()
+            task = {"id": data["next_id"], "title": clean.pop("title"), "done": False,
+                    "created": _now()}
+            task.update(clean)
+            data["tasks"].append(task)
+            data["next_id"] += 1
+            self._save(data)
+            return _public(task)
+
+    def list(self, *, status=None, sort=None) -> list:
+        if status not in STATUSES:
+            raise ValidationError(f"status must be one of open, done, got {status!r}")
+        if sort not in SORTS:
+            raise ValidationError(f"sort must be one of created, due, priority, got {sort!r}")
+        with self._lock:
+            data = self._load()
+        tasks = [_public(t) for t in data["tasks"]]
+        if status is not None:
+            want_done = status == "done"
+            tasks = [t for t in tasks if t["done"] is want_done]
+        if sort is None:
+            key = lambda t: t["id"]
+        elif sort == "created":
+            key = lambda t: (str(t.get("created", "")), t["id"])
+        elif sort == "due":
+            key = lambda t: (t["due"] is None, t["due"] or "", t["id"])
+        else:
+            key = lambda t: (_PRIORITY_RANK.get(t["priority"], len(_PRIORITY_RANK)), t["id"])
+        return sorted(tasks, key=key)
+
+    def get(self, task_id) -> dict:
+        with self._lock:
+            data = self._load()
+        return _public(self._find(data, task_id))
+
+    def complete(self, task_id) -> dict:
+        with self._lock:
+            data = self._load()
+            task = self._find(data, task_id)
+            if not task["done"]:
+                task["done"] = True
+                self._save(data)
+            return _public(task)
+
+    def update(self, task_id, **fields) -> dict:
+        clean = self._validate_update(fields)
+        with self._lock:
+            data = self._load()
+            task = self._find(data, task_id)
+            task.update(clean)
+            self._save(data)
+            return _public(task)
+
+    def delete(self, task_id) -> dict:
+        with self._lock:
+            data = self._load()
+            task = self._find(data, task_id)
+            data["tasks"].remove(task)
+            self._save(data)
+            return _public(task)
+
+    def restore(self, records) -> dict:
+        """Insert tasks from ``records`` (e.g. a CSV import), all-or-nothing.
+
+        Each record is a dict with ``title`` and optional ``id`` (positive int
+        or None -> new id), ``done`` (bool, default False), ``created``
+        (``YYYY-MM-DDTHH:MM:SSZ`` or None -> now) plus create fields accepted by
+        ``_validate_create``. Existing tasks are never overwritten. A record
+        whose explicit id N is already held (by a store task or an earlier
+        record) is skipped if it is the *same task* -- it carries an explicit
+        ``created`` equal to that task's and the same stripped title (done/due/
+        priority ignored) -- and otherwise renumbered to a fresh id. Any
+        invalid record raises ValidationError (message prefixed ``record <n>:``,
+        1-based) and nothing is written. Non-colliding explicit ids are placed
+        first; renumbered and blank-id records then get fresh ids, in record
+        order, above every existing and imported id.
+        Returns ``{"imported": [ids], "skipped": [ids],
+        "renumbered": [[old, new], ...]}`` (imported in record order).
+        """
+        prepared = []
+        for n, rec in enumerate(records, 1):
+            try:
+                prepared.append(self._prepare_record(rec))
+            except ValidationError as exc:
+                err = ValidationError(f"record {n}: {exc}")
+                err.record_index = n - 1  # 0-based position in records
+                err.reason = str(exc)
+                raise err from exc
+        with self._lock:
+            data = self._load()
+            holders = {t["id"]: t for t in data["tasks"]}  # id -> task holding it
+            placed = {}  # index -> task
+            skipped = []
+            fresh = []  # indices needing a fresh id (blank or renumbered)
+            for i, (tid, task, explicit_created) in enumerate(prepared):
+                if tid is None:
+                    fresh.append(i)
+                    continue
+                holder = holders.get(tid)
+                if holder is None:
+                    placed[i] = holders[tid] = dict(task, id=tid)
+                elif (explicit_created and task["created"] == holder["created"]
+                      and task["title"].strip() == holder["title"].strip()):
+                    skipped.append(tid)
+                else:
+                    fresh.append(i)
+            next_id = max([data["next_id"]] + [t["id"] + 1 for t in placed.values()])
+            renumbered = []
+            for i in fresh:
+                tid, task, _ = prepared[i]
+                placed[i] = dict(task, id=next_id)
+                if tid is not None:
+                    renumbered.append([tid, next_id])
+                next_id += 1
+            new_tasks = [placed[i] for i in sorted(placed)]
+            imported = [t["id"] for t in new_tasks]
+            if new_tasks:
+                data["tasks"].extend(new_tasks)
+                data["tasks"].sort(key=lambda t: t["id"])
+                data["next_id"] = next_id
+                self._save(data)
+            return {"imported": imported, "skipped": skipped, "renumbered": renumbered}
+
+    def _prepare_record(self, rec) -> tuple:
+        if not isinstance(rec, dict):
+            raise ValidationError("record must be a dict")
+        rec = dict(rec)
+        tid = rec.pop("id", None)
+        if tid is not None and (type(tid) is not int or tid < 1):
+            raise ValidationError("id must be a positive integer")
+        done = rec.pop("done", False)
+        if not isinstance(done, bool):
+            raise ValidationError("done must be a boolean")
+        created = rec.pop("created", None)
+        explicit_created = created is not None
+        if created is None:
+            created = _now()
+        elif not isinstance(created, str) or not CREATED_RE.match(created):
+            raise ValidationError("created must look like YYYY-MM-DDTHH:MM:SSZ")
+        if "title" not in rec:
+            raise ValidationError("title is required")
+        clean = self._validate_create(rec.pop("title"), rec)
+        task = {"id": tid, "title": clean.pop("title"), "done": done, "created": created}
+        task.update(clean)
+        return tid, task, explicit_created
