@@ -5,7 +5,7 @@ import os
 import re
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from todo.errors import StoreError, TaskNotFound, ValidationError
@@ -14,6 +14,12 @@ FILE_VERSION = 1
 DEFAULT_FILENAME = ".todo.json"
 ENV_VAR = "TODO_FILE"
 CREATED_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+DUE_RE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+PRIORITIES = ("low", "normal", "high")
+DEFAULT_PRIORITY = "normal"
+_PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
+STATUSES = (None, "open", "done")
+SORTS = (None, "created", "due", "priority")
 
 
 def _now() -> str:
@@ -29,6 +35,34 @@ def _clean_title(title) -> str:
     return title
 
 
+def _clean_due(due):
+    """Return a valid ``YYYY-MM-DD`` string or None; raise ValidationError otherwise."""
+    if due is None:
+        return None
+    if not isinstance(due, str) or not DUE_RE.fullmatch(due):
+        raise ValidationError(f"due must be a date in YYYY-MM-DD format, got {due!r}")
+    try:
+        date.fromisoformat(due)
+    except ValueError:
+        raise ValidationError(f"due is not a valid calendar date: {due!r}") from None
+    return due
+
+
+def _clean_priority(priority) -> str:
+    if not isinstance(priority, str) or priority not in PRIORITIES:
+        raise ValidationError(
+            f"priority must be one of {', '.join(PRIORITIES)}, got {priority!r}")
+    return priority
+
+
+def _public(task: dict) -> dict:
+    """Fresh copy of a stored task with S3 defaults backfilled (legacy records)."""
+    out = dict(task)
+    out.setdefault("due", None)
+    out.setdefault("priority", DEFAULT_PRIORITY)
+    return out
+
+
 def _resolve_path(path) -> Path:
     if path is not None:
         return Path(path)
@@ -41,8 +75,8 @@ def _resolve_path(path) -> Path:
 class TaskStore:
     """Persist tasks in a JSON file. Every call re-reads the file."""
 
-    CREATE_FIELDS = ("title",)
-    UPDATE_FIELDS = ("title", "done")
+    CREATE_FIELDS = ("title", "due", "priority")
+    UPDATE_FIELDS = ("title", "done", "due", "priority")
 
     def __init__(self, path=None):
         self.path = _resolve_path(path)
@@ -120,13 +154,18 @@ class TaskStore:
     def _validate_create(self, title, fields: dict) -> dict:
         """Shared create-path validator (used by add and restore).
 
-        Returns the cleaned field dict including ``title``. S1 semantics: any
-        extra field is unknown. S3 extends this helper for due/priority.
+        Returns the clean ``{title, due, priority}`` dict; ``None`` for due or
+        priority means the default (no due date, priority "normal").
         """
         unknown = sorted(k for k in fields if k == "title" or k not in self.CREATE_FIELDS)
         if unknown:
             raise ValidationError(f"unknown field(s): {', '.join(unknown)}")
-        return {"title": _clean_title(title)}
+        priority = fields.get("priority")
+        return {
+            "title": _clean_title(title),
+            "due": _clean_due(fields.get("due")),
+            "priority": DEFAULT_PRIORITY if priority is None else _clean_priority(priority),
+        }
 
     def _validate_update(self, fields: dict) -> dict:
         if not fields:
@@ -141,6 +180,10 @@ class TaskStore:
             if not isinstance(fields["done"], bool):
                 raise ValidationError("done must be a boolean")
             clean["done"] = fields["done"]
+        if "due" in fields:
+            clean["due"] = _clean_due(fields["due"])  # None clears
+        if "priority" in fields:
+            clean["priority"] = _clean_priority(fields["priority"])  # None rejected
         return clean
 
     # -- public API ---------------------------------------------------------
@@ -154,17 +197,33 @@ class TaskStore:
             data["tasks"].append(task)
             data["next_id"] += 1
             self._save(data)
-            return dict(task)
+            return _public(task)
 
-    def list(self) -> list:
+    def list(self, *, status=None, sort=None) -> list:
+        if status not in STATUSES:
+            raise ValidationError(f"status must be one of open, done, got {status!r}")
+        if sort not in SORTS:
+            raise ValidationError(f"sort must be one of created, due, priority, got {sort!r}")
         with self._lock:
             data = self._load()
-        return [dict(t) for t in sorted(data["tasks"], key=lambda t: t["id"])]
+        tasks = [_public(t) for t in data["tasks"]]
+        if status is not None:
+            want_done = status == "done"
+            tasks = [t for t in tasks if t["done"] is want_done]
+        if sort is None:
+            key = lambda t: t["id"]
+        elif sort == "created":
+            key = lambda t: (str(t.get("created", "")), t["id"])
+        elif sort == "due":
+            key = lambda t: (t["due"] is None, t["due"] or "", t["id"])
+        else:
+            key = lambda t: (_PRIORITY_RANK.get(t["priority"], len(_PRIORITY_RANK)), t["id"])
+        return sorted(tasks, key=key)
 
     def get(self, task_id) -> dict:
         with self._lock:
             data = self._load()
-        return dict(self._find(data, task_id))
+        return _public(self._find(data, task_id))
 
     def complete(self, task_id) -> dict:
         with self._lock:
@@ -173,7 +232,7 @@ class TaskStore:
             if not task["done"]:
                 task["done"] = True
                 self._save(data)
-            return dict(task)
+            return _public(task)
 
     def update(self, task_id, **fields) -> dict:
         clean = self._validate_update(fields)
@@ -182,7 +241,7 @@ class TaskStore:
             task = self._find(data, task_id)
             task.update(clean)
             self._save(data)
-            return dict(task)
+            return _public(task)
 
     def delete(self, task_id) -> dict:
         with self._lock:
@@ -190,7 +249,7 @@ class TaskStore:
             task = self._find(data, task_id)
             data["tasks"].remove(task)
             self._save(data)
-            return dict(task)
+            return _public(task)
 
     def restore(self, records) -> dict:
         """Insert tasks from ``records`` (e.g. a CSV import), all-or-nothing.

@@ -63,7 +63,7 @@ class TestLibrary(Base):
         with self.csv.open(encoding="utf-8", newline="") as fh:
             rows = list(csv.DictReader(fh))
         self.assertEqual(rows[0]["done"], "true")
-        self.assertEqual((rows[0]["due"], rows[0]["priority"]), ("", ""))
+        self.assertEqual((rows[0]["due"], rows[0]["priority"]), ("", "normal"))  # S3 merged
         self.assertEqual(tuple(rows[0]), COLUMNS)
 
     def test_empty_store_header_only(self):
@@ -128,7 +128,8 @@ class TestLibrary(Base):
             "title,done\nok,true\nx,maybe\n": 3,
             "title,created\nok,\nx,yesterday\n": 3,
             "title,done\nA,true\n,false\n": 3,
-            "title,due\nx,2026-01-01\n": 2,  # pre-S3: due is an unknown field
+            "title,due\nok,\nx,2026-02-30\n": 3,  # S3: not a real calendar date
+            "title,priority\nx,urgent\n": 2,  # S3: bad priority
         }
         self.b.add("existing")
         before = self.b.path.read_bytes()
