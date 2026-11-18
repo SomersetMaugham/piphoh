@@ -11,7 +11,7 @@ import sys
 from todo import __version__
 from todo.errors import TodoError
 
-COMMAND_MODULES: list[str] = ["todo.commands", "todo.csvio"]
+COMMAND_MODULES: list[str] = ["todo.commands", "todo.server", "todo.csvio"]
 
 
 def build_parser() -> argparse.ArgumentParser:
