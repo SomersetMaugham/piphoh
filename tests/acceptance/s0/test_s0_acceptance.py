@@ -164,7 +164,7 @@ class TestA9StdlibOnly(unittest.TestCase):
 
     def test_a9_imports_resolve_in_isolated_python(self):
         # -I ignores user site-packages and PYTHONPATH; -S skips site-packages.
-        r = run_py("-I", "-S", "-c",
+        r = run_py("-I", "-S", "-B", "-c",
                    "import sys; sys.path.insert(0, '.'); import todo, todo.cli; print('ok')")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "ok")
