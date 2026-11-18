@@ -233,6 +233,9 @@ class TestA8OnlyReadme(unittest.TestCase):
             self.fail(f"git {' '.join(args)} failed: {r.stderr.strip()}")
         return r.stdout
 
+    # Slice-scope check: meaningful only while verifying the S9 branch, not after merge
+    # (main legitimately has more files than README.md). Set S9_SLICE_CHECK=1 to run it.
+    @unittest.skipUnless(os.environ.get("S9_SLICE_CHECK") == "1", "S9 slice-scope check; set S9_SLICE_CHECK=1 on the S9 branch")
     def test_a8_no_source_or_test_changes(self):
         if shutil.which("git") is None:
             self.skipTest("git not available")

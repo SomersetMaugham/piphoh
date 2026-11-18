@@ -1,6 +1,8 @@
-# todo-app
+# piphoh
 
-A small task manager with a command-line interface, a local REST API and CSV export/import.
+Pipelined HoH (Harness of Harness).
+
+This repository holds `todo-app`, a small task manager with a command-line interface, a local REST API and CSV export/import. It was built with the *pipelined-team-harness* skill, which runs Planner, Developer and QA subagents as a staggered pipeline. The build records are in [`docs/harness-trial/`](docs/harness-trial/README.md): contracts, QA evidence, final reports, the retro and the skill itself. The code is MIT licensed (see `LICENSE`).
 
 ## Requirements
 
