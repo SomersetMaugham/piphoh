@@ -166,22 +166,31 @@ class TestA4Duplicates(CsvTestBase):
         self.assertEqual(self.TaskStore(self.b).list(), before)
 
     def test_a4_same_id_twice_in_file(self):
+        # S6 contract change: a repeated id with a different task is renumbered, not skipped.
         self.write_csv("dup.csv", "id,title\n5,First\n5,Second\n")
         r = self.ok(self.b, "import", "dup.csv")
-        self.assertEqual(r.stdout.strip(), "Imported 1 tasks, skipped 1 duplicates")
+        self.assertEqual(r.stdout.splitlines(), [
+            "Imported 2 tasks, skipped 0 duplicates",
+            "Renumbered task 5 -> 6: id 5 is used by a different task",
+        ])
         tasks = self.TaskStore(self.b).list()
-        self.assertEqual([t["id"] for t in tasks], [5])
-        self.assertEqual(tasks[0]["title"], "First")
+        self.assertEqual([(t["id"], t["title"]) for t in tasks], [(5, "First"), (6, "Second")])
 
     def test_a4_existing_task_never_overwritten(self):
         sb = self.TaskStore(self.b)
         sb.add("Original")
         self.write_csv("in.csv", "id,title,done\n1,Replacement,true\n2,New,false\n")
         r = self.ok(self.b, "import", "in.csv")
-        self.assertEqual(r.stdout.strip(), "Imported 1 tasks, skipped 1 duplicates")
+        # S6 contract change: the colliding row is imported under a fresh id (3), not skipped.
+        self.assertEqual(r.stdout.splitlines(), [
+            "Imported 2 tasks, skipped 0 duplicates",
+            "Renumbered task 1 -> 3: id 1 is used by a different task",
+        ])
         t1 = self.TaskStore(self.b).get(1)
         self.assertEqual((t1["title"], t1["done"]), ("Original", False))
         self.assertEqual(self.TaskStore(self.b).get(2)["title"], "New")
+        t3 = self.TaskStore(self.b).get(3)
+        self.assertEqual((t3["title"], t3["done"]), ("Replacement", True))
 
 
 class TestA5TitleOnly(CsvTestBase):
@@ -326,7 +335,8 @@ class TestA11InProcess(CsvTestBase):
         p = self.tmp / "p.csv"
         self.assertEqual(export_csv(s1, p), 2)
         s2 = self.TaskStore(self.b)
-        self.assertEqual(import_csv(s2, p), {"imported": 2, "skipped": 0})
+        # S6 contract change: result gains key "renumbered".
+        self.assertEqual(import_csv(s2, p), {"imported": 2, "skipped": 0, "renumbered": []})
         self.assertEqual(s2.list(), s1.list())
 
     def test_a11_columns_constant(self):
