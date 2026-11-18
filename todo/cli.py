@@ -9,7 +9,7 @@ import importlib
 
 from todo import __version__
 
-COMMAND_MODULES: list[str] = []
+COMMAND_MODULES: list[str] = ["todo.csvio"]
 
 
 def build_parser() -> argparse.ArgumentParser:

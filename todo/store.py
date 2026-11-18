@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from todo.errors import StoreError, TaskNotFound, ValidationError
 FILE_VERSION = 1
 DEFAULT_FILENAME = ".todo.json"
 ENV_VAR = "TODO_FILE"
+CREATED_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
 
 def _now() -> str:
@@ -115,6 +117,17 @@ class TaskStore:
         raise TaskNotFound(task_id)
 
     # -- validation -----------------------------------------------------------
+    def _validate_create(self, title, fields: dict) -> dict:
+        """Shared create-path validator (used by add and restore).
+
+        Returns the cleaned field dict including ``title``. S1 semantics: any
+        extra field is unknown. S3 extends this helper for due/priority.
+        """
+        unknown = sorted(k for k in fields if k == "title" or k not in self.CREATE_FIELDS)
+        if unknown:
+            raise ValidationError(f"unknown field(s): {', '.join(unknown)}")
+        return {"title": _clean_title(title)}
+
     def _validate_update(self, fields: dict) -> dict:
         if not fields:
             raise ValidationError("no fields to update")
@@ -132,12 +145,12 @@ class TaskStore:
 
     # -- public API ---------------------------------------------------------
     def add(self, title, **fields) -> dict:
-        if fields:
-            raise ValidationError(f"unknown field(s): {', '.join(sorted(fields))}")
-        title = _clean_title(title)
+        clean = self._validate_create(title, fields)
         with self._lock:
             data = self._load()
-            task = {"id": data["next_id"], "title": title, "done": False, "created": _now()}
+            task = {"id": data["next_id"], "title": clean.pop("title"), "done": False,
+                    "created": _now()}
+            task.update(clean)
             data["tasks"].append(task)
             data["next_id"] += 1
             self._save(data)
@@ -178,3 +191,74 @@ class TaskStore:
             data["tasks"].remove(task)
             self._save(data)
             return dict(task)
+
+    def restore(self, records) -> dict:
+        """Insert tasks from ``records`` (e.g. a CSV import), all-or-nothing.
+
+        Each record is a dict with ``title`` and optional ``id`` (positive int
+        or None -> new id), ``done`` (bool, default False), ``created``
+        (``YYYY-MM-DDTHH:MM:SSZ`` or None -> now) plus create fields accepted by
+        ``_validate_create``. A record whose id already exists in the store or
+        repeats an earlier record's id is skipped (never overwritten). Any
+        invalid record raises ValidationError (message prefixed ``record <n>:``,
+        1-based) and nothing is written. Explicit ids are placed first; blank-id
+        records then get fresh ids above every existing and imported id.
+        Returns ``{"imported": [ids], "skipped": [ids]}``.
+        """
+        prepared = []
+        for n, rec in enumerate(records, 1):
+            try:
+                prepared.append(self._prepare_record(rec))
+            except ValidationError as exc:
+                err = ValidationError(f"record {n}: {exc}")
+                err.record_index = n - 1  # 0-based position in records
+                err.reason = str(exc)
+                raise err from exc
+        with self._lock:
+            data = self._load()
+            taken = {t["id"] for t in data["tasks"]}
+            placed = {}  # index -> task
+            skipped = []
+            for i, (tid, task) in enumerate(prepared):
+                if tid is None:
+                    continue
+                if tid in taken:
+                    skipped.append(tid)
+                    continue
+                taken.add(tid)
+                placed[i] = dict(task, id=tid)
+            next_id = max([data["next_id"]] + [t["id"] + 1 for t in placed.values()])
+            for i, (tid, task) in enumerate(prepared):
+                if tid is None:
+                    placed[i] = dict(task, id=next_id)
+                    next_id += 1
+            new_tasks = [placed[i] for i in sorted(placed)]
+            imported = [t["id"] for t in new_tasks]
+            if new_tasks:
+                data["tasks"].extend(new_tasks)
+                data["tasks"].sort(key=lambda t: t["id"])
+                data["next_id"] = next_id
+                self._save(data)
+            return {"imported": imported, "skipped": skipped}
+
+    def _prepare_record(self, rec) -> tuple:
+        if not isinstance(rec, dict):
+            raise ValidationError("record must be a dict")
+        rec = dict(rec)
+        tid = rec.pop("id", None)
+        if tid is not None and (type(tid) is not int or tid < 1):
+            raise ValidationError("id must be a positive integer")
+        done = rec.pop("done", False)
+        if not isinstance(done, bool):
+            raise ValidationError("done must be a boolean")
+        created = rec.pop("created", None)
+        if created is None:
+            created = _now()
+        elif not isinstance(created, str) or not CREATED_RE.match(created):
+            raise ValidationError("created must look like YYYY-MM-DDTHH:MM:SSZ")
+        if "title" not in rec:
+            raise ValidationError("title is required")
+        clean = self._validate_create(rec.pop("title"), rec)
+        task = {"id": tid, "title": clean.pop("title"), "done": done, "created": created}
+        task.update(clean)
+        return tid, task
