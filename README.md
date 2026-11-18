@@ -159,4 +159,4 @@ python -m unittest discover -s tests
 
 ## Credits
 
-- [HarnessOfHarness](https://github.com/SomersetMaugham/HarnessOfHarness) is the base of this work: its roles, gates and evidence loop are adapted into the pipelined harness (see `docs/harness-trial/SKILL.md`).
+- [HarnessOfHarness](https://github.com/Flesymeb/HarnessOfHarness) is the base of this work: its roles, gates and evidence loop are adapted into the pipelined harness (see `docs/harness-trial/SKILL.md`).
