@@ -4,6 +4,7 @@ This folder holds the records from building `todo-app` with the
 **pipelined-team-harness** skill. The skill runs Planner, Developer and QA subagent
 lanes as a staggered pipeline, combining ideas from Harness-of-Harness (HoH) with
 vertical slicing and critical-path scheduling.
+The base project is [HarnessOfHarness](https://github.com/SomersetMaugham/HarnessOfHarness).
 
 The work ran in two rounds:
 - **Round 1 (S0–S5):** a walking skeleton, the JSON store, the CLI, due dates and priority, the REST API, and CSV export/import.

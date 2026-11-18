@@ -2,6 +2,8 @@
 
 Pipelined HoH (Harness of Harness).
 
+> **Based on [HarnessOfHarness](https://github.com/SomersetMaugham/HarnessOfHarness).** The pipelined-team-harness skill used here builds on that project. It keeps HoH's Planner/Developer/QA roles, the read-only checks on Planner and QA, the rule that roles talk only through documents, the evidence bundles passed between loops, and the Preservation and Acceptance gates. On top of that it runs the roles as a staggered pipeline over vertical slices, so they work in parallel instead of one after another.
+
 This repository holds `todo-app`, a small task manager with a command-line interface, a local REST API and CSV export/import. It was built with the *pipelined-team-harness* skill, which runs Planner, Developer and QA subagents as a staggered pipeline. The build records are in [`docs/harness-trial/`](docs/harness-trial/README.md): contracts, QA evidence, final reports, the retro and the skill itself. The code is MIT licensed (see `LICENSE`).
 
 ## Requirements
@@ -154,3 +156,7 @@ Renumbered task 1 -> 3: id 1 is used by a different task
 ```sh
 python -m unittest discover -s tests
 ```
+
+## Credits
+
+- [HarnessOfHarness](https://github.com/SomersetMaugham/HarnessOfHarness) is the base of this work: its roles, gates and evidence loop are adapted into the pipelined harness (see `docs/harness-trial/SKILL.md`).
