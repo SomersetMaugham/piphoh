@@ -134,10 +134,14 @@ class TodoRequestHandler(BaseHTTPRequestHandler):
     do_GET = do_POST = do_PATCH = do_DELETE = do_PUT = do_OPTIONS = _dispatch
 
 
+class TodoHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 128  # default 5 drops connections under concurrent clients
+
+
 def make_server(store: TaskStore, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
     """Return a bound (not yet serving) HTTP server exposing ``store``."""
-    server = ThreadingHTTPServer((host, port), TodoRequestHandler)
-    server.daemon_threads = True
+    server = TodoHTTPServer((host, port), TodoRequestHandler)
     server.store = store
     server.store_lock = threading.Lock()
     server.log_requests = False
