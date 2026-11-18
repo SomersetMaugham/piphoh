@@ -26,6 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     for dotted in COMMAND_MODULES:
         importlib.import_module(dotted).register(subparsers)
+    # Accept --file after the subcommand too, for every command (incl. ones
+    # registered later). SUPPRESS keeps the top-level value unless given here,
+    # so the occurrence after the subcommand wins.
+    unique = {id(sub): sub for sub in subparsers.choices.values()}  # aliases share a parser
+    for sub in unique.values():
+        sub.add_argument(
+            "--file", metavar="PATH", default=argparse.SUPPRESS,
+            help="task store file (same as the global --file)",
+        )
     return parser
 
 
@@ -40,6 +49,11 @@ def main(argv: list[str] | None = None) -> int:
             return func(args)
         except TodoError as exc:
             print(f"error: {exc}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            return 130
+        except Exception as exc:  # last resort: never show a traceback
+            print(f"error: unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
             return 1
     parser.error(f"command {args.command!r} has no handler")
     return 2  # unreachable; parser.error exits

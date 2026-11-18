@@ -65,10 +65,10 @@ def _public(task: dict) -> dict:
 
 def _resolve_path(path) -> Path:
     if path is not None:
-        return Path(path)
+        return Path(path).expanduser()
     env = os.environ.get(ENV_VAR)
     if env:
-        return Path(env)
+        return Path(env).expanduser()
     return Path(os.path.expanduser("~")) / DEFAULT_FILENAME
 
 
@@ -113,6 +113,7 @@ class TaskStore:
             bad("'tasks' must be a list")
         if not isinstance(next_id, int) or isinstance(next_id, bool) or next_id < 1:
             bad("'next_id' must be a positive integer")
+        seen = set()
         for t in tasks:
             if not isinstance(t, dict):
                 bad("each task must be an object")
@@ -121,6 +122,19 @@ class TaskStore:
                 bad("task 'id' must be an integer")
             if not isinstance(t.get("title"), str) or not isinstance(t.get("done"), bool):
                 bad(f"task {tid} has invalid 'title' or 'done'")
+            created = t.get("created")
+            if not isinstance(created, str) or not CREATED_RE.match(created):
+                bad(f"task {tid} has invalid 'created'")
+            if "due" in t:
+                try:
+                    _clean_due(t["due"])
+                except ValidationError:
+                    bad(f"task {tid} has invalid 'due'")
+            if "priority" in t and t["priority"] not in PRIORITIES:
+                bad(f"task {tid} has invalid 'priority'")
+            if tid in seen:
+                bad(f"duplicate task id {tid}")
+            seen.add(tid)
             if tid >= next_id:
                 bad(f"task id {tid} is not below 'next_id'")
 

@@ -3,6 +3,7 @@
 Routes: GET/POST /tasks, GET/PATCH/DELETE /tasks/<id>.
 """
 
+import argparse
 import json
 import sys
 import threading
@@ -148,6 +149,18 @@ def make_server(store: TaskStore, host: str = "127.0.0.1", port: int = 0) -> Thr
     return server
 
 
+def _port(value: str) -> int:
+    """argparse ``type=`` for ``--port``: an integer from 0 to 65535."""
+    try:
+        port = int(value)
+    except ValueError:
+        port = -1
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(
+            f"port must be an integer from 0 to 65535, got {value!r}")
+    return port
+
+
 def _serve(args) -> int:
     store = TaskStore(getattr(args, "file", None))
     try:
@@ -155,6 +168,9 @@ def _serve(args) -> int:
     except OSError as exc:
         print(f"error: cannot listen on {args.host}:{args.port}: {exc.strerror or exc}",
               file=sys.stderr)
+        return 1
+    except (OverflowError, ValueError) as exc:
+        print(f"error: cannot listen on {args.host}:{args.port}: {exc}", file=sys.stderr)
         return 1
     server.log_requests = True
     host, port = server.server_address[:2]
@@ -170,6 +186,6 @@ def _serve(args) -> int:
 
 def register(subparsers) -> None:
     p = subparsers.add_parser("serve", help="run the REST API server")
-    p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    p.add_argument("--port", type=_port, default=8000, help="port 0-65535 (default 8000; 0 = any free port)")
     p.add_argument("--host", default="127.0.0.1", help="host (default 127.0.0.1)")
     p.set_defaults(func=_serve)
