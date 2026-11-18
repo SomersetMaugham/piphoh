@@ -9,7 +9,7 @@ import importlib
 
 from todo import __version__
 
-COMMAND_MODULES: list[str] = []
+COMMAND_MODULES: list[str] = ["todo.server"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="version", version=f"todo {__version__}"
     )
+    parser.add_argument("--file", metavar="PATH", help="task file (default: $TODO_FILE or ~/.todo.json)")
     subparsers = parser.add_subparsers(dest="command")
     for dotted in COMMAND_MODULES:
         importlib.import_module(dotted).register(subparsers)
