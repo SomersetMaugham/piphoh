@@ -1,0 +1,217 @@
+{
+  "slice": "S1",
+  "status": "pass",
+  "items": [
+    {
+      "acceptance": "1. add then new instance list(); file valid JSON",
+      "status": "pass",
+      "evidence": [
+        "check.py A1: new TaskStore(p).list() -> [{'id':1,'title':'Buy milk','done':False,'created':...}]; file top-level keys next_id/tasks/version",
+        "test_a1_add_persists_and_new_instance_lists ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "2. add() return keys/types; created format and within 5 s",
+      "status": "pass",
+      "evidence": [
+        "check.py A2: types int/str/bool/str; regex match True; age 0.96 s",
+        "test_a2_add_return_shape_and_created ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "3. title stripped; bad titles and unknown fields -> ValidationError (TodoError, ValueError)",
+      "status": "pass",
+      "evidence": [
+        "check.py A3: '  x  ' -> 'x'; '', '   ', None, 5 -> ValidationError (isinstance TodoError and ValueError True); add('x', bogus=1) -> ValidationError 'unknown field(s): bogus'; no task created by failures",
+        "test_a3_* (3 tests) ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "4. list() on missing path is [] and creates no file; ids [1,2,3]",
+      "status": "pass",
+      "evidence": [
+        "check.py A4: [] / exists False; ids [1,2,3]",
+        "test_a4_* (2 tests) ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "5. complete idempotent and persisted",
+      "status": "pass",
+      "evidence": [
+        "check.py A5: True, True, new instance get(1)['done'] True",
+        "test_a5_complete_idempotent_and_persisted ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "6. delete(2) returns task; get(2) TaskNotFound task_id 2; ids [1,3]",
+      "status": "pass",
+      "evidence": [
+        "check.py A6: delete -> {'id':2,'title':'b',...}; e.task_id 2, 'task 2 not found'; ids [1,3]",
+        "test_a6_delete_returns_task_then_gone ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "7. ids never reused",
+      "status": "pass",
+      "evidence": [
+        "check.py A7: add,add,delete(2),add -> id 3; next_id in file 4",
+        "test_a7_ids_never_reused ok (also across instances: id 4 after deleting 3)"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "8. get/complete/delete/update unknown id -> TaskNotFound, message exact",
+      "status": "pass",
+      "evidence": [
+        "python -c: all four methods -> task_id 99, str 'task 99 not found'",
+        "test_a8_unknown_id_raises_task_not_found ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "9. update title/done persist; invalid updates -> ValidationError",
+      "status": "pass",
+      "evidence": [
+        "check.py A9: new instance get(1) -> title 'New', done False; update(1) 'no fields to update'; done=1 and done='true' 'done must be a boolean'; title='' 'title must not be empty'; color='red' 'unknown field(s): color'; update(99, color='red') -> ValidationError (fields validated before id)",
+        "test_a9_* (2 tests) ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "10. returned dicts are copies",
+      "status": "pass",
+      "evidence": [
+        "check.py A10: mutating add/get/list results leaves get(1)['title'] == 'orig'",
+        "test_a10_returned_dict_is_a_copy ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "11. path resolution: env, explicit beats env, default HOME/.todo.json",
+      "status": "pass",
+      "evidence": [
+        "check.py A11: TODO_FILE -> PosixPath equal to env path; explicit arg wins; no env, HOME=tmp -> <tmp>/home/.todo.json",
+        "test_a11_* (3 tests) ok",
+        "real ~/.todo.json absent before and after"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "12. invalid JSON -> StoreError with path",
+      "status": "pass",
+      "evidence": [
+        "check.py A12: StoreError 'invalid JSON in /tmp/.../bad.json: ...'; wrong structure ([1,2]) -> StoreError 'invalid store file <path>: top level must be an object'",
+        "test_a12_invalid_json_raises_store_error_with_path ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "13. parent dir created on first write",
+      "status": "pass",
+      "evidence": [
+        "check.py A13: tmp/sub/dir/t.json created, version 1, no leftover temp files in dir",
+        "test_a13_parent_dir_created_on_first_write ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "14. re-exports from todo",
+      "status": "pass",
+      "evidence": [
+        "check.py A14: from todo import TaskStore, TodoError, TaskNotFound, ValidationError, StoreError ok; same objects as todo.store/todo.errors; CREATE_FIELDS ('title',), UPDATE_FIELDS ('title','done')",
+        "test_a14_public_reexports ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    }
+  ],
+  "preservation": [
+    {
+      "behavior": "S0: python -m todo --version prints 'todo 0.1.0', exit 0",
+      "status": "pass",
+      "evidence": [
+        "stdout 'todo 0.1.0', rc 0"
+      ]
+    },
+    {
+      "behavior": "S0: no args -> usage on stderr, exit 2, empty stdout; --bogus -> exit 2 with usage",
+      "status": "pass",
+      "evidence": [
+        "no args: rc 2, stdout 0 bytes, stderr 'usage: todo ...'; --bogus: rc 2, stderr 'usage: todo ...unrecognized arguments'"
+      ]
+    },
+    {
+      "behavior": "S0: main(['--version']) raises SystemExit(0)",
+      "status": "pass",
+      "evidence": [
+        "python -c: SystemExit 0"
+      ]
+    },
+    {
+      "behavior": "S0: python -m unittest discover -s tests -t . exits 0",
+      "status": "pass",
+      "evidence": [
+        "Ran 47 tests ... OK (20 acceptance.s1 tests ok)"
+      ]
+    },
+    {
+      "behavior": "S0: python -m unittest discover -s tests exits 0",
+      "status": "pass",
+      "evidence": [
+        "Ran 47 tests ... OK"
+      ]
+    },
+    {
+      "behavior": "S0: no non-stdlib imports under todo/",
+      "status": "pass",
+      "evidence": [
+        "grep of imports under todo/: only stdlib and todo-internal modules"
+      ]
+    },
+    {
+      "behavior": "S1 acceptance tests byte-identical to harness/S1-tests",
+      "status": "pass",
+      "evidence": [
+        "git diff --stat harness/S1-tests harness/S1 -- tests/acceptance/s1: empty"
+      ]
+    }
+  ],
+  "regressions": [],
+  "contract_issues": [
+    "S0 acceptance tests (tests/acceptance/s0) are not on harness/S1, so S0 preservation was checked by hand (commands above), not by the S0 suite.",
+    "Atomic write (os.replace) and the threading.Lock are in the interface but not in the numbered Acceptance; only checked indirectly (no leftover temp files)."
+  ]
+}

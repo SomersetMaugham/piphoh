@@ -1,0 +1,114 @@
+{
+  "team": {
+    "pm": 1,
+    "dev": 2,
+    "qa": 1
+  },
+  "defaults": {
+    "spec": 1,
+    "prewrite": 1,
+    "build": 2,
+    "verify": 1
+  },
+  "dep_gate": "build",
+  "wip_limit": 3,
+  "idle_threshold": 0.2,
+  "slices": [
+    {
+      "id": "S0",
+      "title": "Walking skeleton: package, --version, test runner",
+      "area": "core",
+      "build": 1
+    },
+    {
+      "id": "S1",
+      "title": "JSON store: add/list/complete/delete",
+      "deps": [
+        "S0"
+      ],
+      "area": "store"
+    },
+    {
+      "id": "S2",
+      "title": "CLI add/list/done/rm",
+      "deps": [
+        "S1"
+      ],
+      "area": "cli"
+    },
+    {
+      "id": "S3",
+      "title": "Due date + priority, filter/sort in store",
+      "deps": [
+        "S1",
+        "S2"
+      ],
+      "area": "store"
+    },
+    {
+      "id": "S4",
+      "title": "REST API",
+      "deps": [
+        "S1"
+      ],
+      "area": "api",
+      "build": 3
+    },
+    {
+      "id": "S5",
+      "title": "CSV export/import",
+      "deps": [
+        "S1"
+      ],
+      "area": "store",
+      "build": 1,
+      "pm_ok": true
+    },
+    {
+      "id": "S6",
+      "title": "CSV import conflict policy (no silent loss)",
+      "deps": [
+        "S1",
+        "S2",
+        "S5"
+      ],
+      "area": "store",
+      "build": 2
+    },
+    {
+      "id": "S7",
+      "title": "Error hardening: port, malformed records, ~ paths, --file anywhere",
+      "deps": [
+        "S1",
+        "S2",
+        "S3",
+        "S4",
+        "S5"
+      ],
+      "area": "store",
+      "build": 2
+    },
+    {
+      "id": "S8",
+      "title": "edit command",
+      "deps": [
+        "S2",
+        "S3"
+      ],
+      "area": "commands",
+      "build": 2
+    },
+    {
+      "id": "S9",
+      "title": "README (usage for CLI, REST, CSV)",
+      "deps": [
+        "S6",
+        "S7",
+        "S8"
+      ],
+      "area": "docs",
+      "build": 1,
+      "pm_ok": true
+    }
+  ]
+}

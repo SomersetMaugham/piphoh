@@ -1,0 +1,182 @@
+{
+  "slice": "S2",
+  "status": "pass",
+  "items": [
+    {
+      "acceptance": "1. add 'Buy milk' -> 'Added task 1: Buy milk'; list line 1 starts '1 [ ] Buy milk'",
+      "status": "pass",
+      "evidence": [
+        "CLI: add rc 0 stdout 'Added task 1: Buy milk'; list rc 0 stdout '1 [ ] Buy milk'",
+        "test_a1_add_then_list ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "2. list on nonexistent file -> 'No tasks.'; list --json -> []",
+      "status": "pass",
+      "evidence": [
+        "CLI: rc 0 'No tasks.'; --json rc 0 '[]'; file not created by reads",
+        "test_a2_list_empty_nonexistent_file ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "3. list --json after A,B: ids [1,2], titles, done False, created present",
+      "status": "pass",
+      "evidence": [
+        "CLI: [{id 1,title A,done false,created ...},{id 2,title B,done false,created ...}]",
+        "test_a3_list_json_shape ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "4. done 1 -> 'Completed task 1: A'; list '1 [x] A' / '2 [ ] B'",
+      "status": "pass",
+      "evidence": [
+        "CLI: rc 0; list '1 [x] A|2 [ ] B'",
+        "test_a4_done_marks_complete ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "5. rm 2 -> 'Deleted task 2: B'; list --json ids [1]",
+      "status": "pass",
+      "evidence": [
+        "CLI: rc 0; --json ids [1]",
+        "test_a5_rm_deletes ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "6. done 42 / rm 42 -> exit 1, 'task 42 not found', stdout empty, no traceback",
+      "status": "pass",
+      "evidence": [
+        "CLI: both rc 1, stderr 'error: task 42 not found', stdout empty, 0 Traceback",
+        "test_a6_unknown_id_errors ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "7. done abc -> exit 2 with 'invalid'; add with no title -> exit 2",
+      "status": "pass",
+      "evidence": [
+        "CLI: done abc rc 2 \"invalid int value: 'abc'\"; add rc 2 'the following arguments are required: title'; rm 1.5 rc 2",
+        "test_a7_* (2 tests) ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "8. add '' / '   ' -> exit 1, stderr starts 'error:'; no task created",
+      "status": "pass",
+      "evidence": [
+        "CLI: both rc 1 'error: title must not be empty'; list --json []",
+        "test_a8_blank_title_rejected ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "9. TODO_FILE fallback without --file",
+      "status": "pass",
+      "evidence": [
+        "CLI: TODO_FILE=<tmp>/env.json add X rc 0; TaskStore(env.json).list() -> [X]; --file beats TODO_FILE (Y went to arg.json); temp HOME has no .todo.json",
+        "test_a9_* (2 tests) ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "10. invalid JSON -> list exit 1, 'error:', no traceback",
+      "status": "pass",
+      "evidence": [
+        "CLI: rc 1 'error: invalid JSON in <path>: ...'; wrong structure [1] -> rc 1 'error: invalid store file <path>: ...'; no Traceback",
+        "test_a10_invalid_json_file ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "11. in-process main([...,'add','Z']) == 0, stdout capturable",
+      "status": "pass",
+      "evidence": [
+        "python -B -c: rc 0, captured 'Added task 1: Z\\n'; main(['done','9']) rc 1, stderr 'error: task 9 not found'",
+        "test_a11_in_process_main ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    },
+    {
+      "acceptance": "12. CLI writes visible to library",
+      "status": "pass",
+      "evidence": [
+        "CLI add X; TaskStore(tmp).get(1)['title'] == 'X'",
+        "test_a12_cli_writes_visible_to_library ok"
+      ],
+      "impact": "none",
+      "owner": "developer",
+      "recommendation": "none"
+    }
+  ],
+  "preservation": [
+    {
+      "behavior": "S0: --version -> 'todo 0.1.0', exit 0",
+      "status": "pass",
+      "evidence": [
+        "CLI: rc 0 stdout 'todo 0.1.0'",
+        "tests.acceptance.s0: 11 tests ok"
+      ]
+    },
+    {
+      "behavior": "S0: no subcommand -> usage on stderr, exit 2, stdout empty; --bogus exit 2",
+      "status": "pass",
+      "evidence": [
+        "CLI: no args rc 2 'usage: todo ... a command is required'; '--file X' alone rc 2; --bogus rc 2"
+      ]
+    },
+    {
+      "behavior": "S0: both discovery forms exit 0",
+      "status": "pass",
+      "evidence": [
+        "discover -s tests -t .: Ran 77 tests OK",
+        "discover -s tests: Ran 77 tests OK"
+      ]
+    },
+    {
+      "behavior": "S1: store behaviors (acceptance suite)",
+      "status": "pass",
+      "evidence": [
+        "tests.acceptance.s1: 20 tests ok; developer tests/test_store.py ok"
+      ]
+    },
+    {
+      "behavior": "S2 acceptance tests byte-identical to harness/S2-tests",
+      "status": "pass",
+      "evidence": [
+        "git diff --stat harness/S2-tests harness/S2 -- tests/acceptance/s2: empty"
+      ]
+    }
+  ],
+  "regressions": [],
+  "contract_issues": [],
+  "notes": [
+    "Untracked, git-ignored todo/__pycache__ (__init__, cli, errors, store .pyc; no commands.pyc) is present in the qa-S2 worktree, mtime 14:26:12. QA left it in place (no edits in the worktree). It is likely not from QA: every QA run set PYTHONDONTWRITEBYTECODE=1 and imported todo.commands. It does not affect the results."
+  ]
+}
