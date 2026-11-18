@@ -1,4 +1,4 @@
-"""Dev-owned tests for S5 CSV export/import (store.restore, todo.csvio, CLI)."""
+"""Dev-owned tests for S5/S6 CSV export/import (store.restore, todo.csvio, CLI)."""
 
 import csv
 import json
@@ -50,7 +50,8 @@ class TestLibrary(Base):
         self.a.add('Say "hi", world\nsecond line')
         self.a.complete(2)
         self.assertEqual(export_csv(self.a, self.csv), 2)
-        self.assertEqual(import_csv(self.b, self.csv), {"imported": 2, "skipped": 0})
+        self.assertEqual(import_csv(self.b, self.csv),
+                         {"imported": 2, "skipped": 0, "renumbered": []})
         self.assertEqual(self.b.list(), self.a.list())
         self.assertEqual(self.b.add("next")["id"], 3)
 
@@ -76,20 +77,68 @@ class TestLibrary(Base):
         export_csv(self.a, self.csv)
         import_csv(self.b, self.csv)
         before = self.b.path.read_bytes()
-        self.assertEqual(import_csv(self.b, self.csv), {"imported": 0, "skipped": 2})
+        self.assertEqual(import_csv(self.b, self.csv),
+                         {"imported": 0, "skipped": 2, "renumbered": []})
         self.assertEqual(self.b.path.read_bytes(), before)
 
     def test_duplicate_within_file(self):
         self.write_csv("id,title\n5,first\n5,second\n")
-        self.assertEqual(import_csv(self.b, self.csv), {"imported": 1, "skipped": 1})
+        self.assertEqual(import_csv(self.b, self.csv),
+                         {"imported": 2, "skipped": 0, "renumbered": [[5, 6]]})
         self.assertEqual(self.b.get(5)["title"], "first")
-        self.assertEqual(self.b.add("n")["id"], 6)
+        self.assertEqual(self.b.get(6)["title"], "second")
+        self.assertEqual(self.b.add("n")["id"], 7)
+
+    def test_identical_rows_within_file_second_skipped(self):
+        self.write_csv("id,title,created\n5,a,2026-01-01T00:00:00Z\n5, a ,2026-01-01T00:00:00Z\n")
+        self.assertEqual(import_csv(self.b, self.csv),
+                         {"imported": 1, "skipped": 1, "renumbered": []})
 
     def test_existing_never_overwritten(self):
         self.b.add("keep")
         self.write_csv("id,title\n1,replace\n")
-        self.assertEqual(import_csv(self.b, self.csv), {"imported": 0, "skipped": 1})
+        self.assertEqual(import_csv(self.b, self.csv),
+                         {"imported": 1, "skipped": 0, "renumbered": [[1, 2]]})
         self.assertEqual(self.b.get(1)["title"], "keep")
+        self.assertEqual(self.b.get(2)["title"], "replace")
+
+    def test_same_task_ignores_mutable_fields(self):
+        t = self.b.add("same")
+        self.write_csv(f"id,title,done,created,due,priority\n1,same ,true,{t['created']},2027-01-01,high\n")
+        before = self.b.path.read_bytes()
+        self.assertEqual(import_csv(self.b, self.csv),
+                         {"imported": 0, "skipped": 1, "renumbered": []})
+        self.assertEqual(self.b.path.read_bytes(), before)
+
+    def test_different_created_or_missing_created_renumbered(self):
+        self.b.add("same")
+        self.write_csv("id,title,created\n1,same,2000-01-01T00:00:00Z\n")
+        self.assertEqual(import_csv(self.b, self.csv)["renumbered"], [[1, 2]])
+        self.write_csv("id,title\n1,same\n")
+        self.assertEqual(import_csv(self.b, self.csv)["renumbered"], [[1, 3]])
+        t1 = self.b.get(1)
+        self.write_csv(f"id,title,created\n1,same,\n")  # blank created cell = not explicit
+        self.assertEqual(import_csv(self.b, self.csv)["renumbered"], [[1, 4]])
+        self.assertEqual(self.b.get(1), t1)
+
+    def test_renumber_blank_and_high_id_mix(self):
+        self.b.add("a")
+        self.b.add("b")
+        self.write_csv("id,title\n1,X\n,Y\n10,Z\n")
+        self.assertEqual(import_csv(self.b, self.csv),
+                         {"imported": 3, "skipped": 0, "renumbered": [[1, 11]]})
+        self.assertEqual([(t["id"], t["title"]) for t in self.b.list()],
+                         [(1, "a"), (2, "b"), (10, "Z"), (11, "X"), (12, "Y")])
+        self.assertEqual(self.b.add("n")["id"], 13)
+
+    def test_invalid_row_after_collision_imports_nothing(self):
+        self.b.add("keep")
+        before = self.b.path.read_bytes()
+        self.write_csv("id,title,done\n1,other,false\n2,bad,maybe\n")
+        with self.assertRaises(ValidationError) as cm:
+            import_csv(self.b, self.csv)
+        self.assertIn(f"{self.csv}:3:", str(cm.exception))
+        self.assertEqual(self.b.path.read_bytes(), before)
 
     def test_title_only_gets_new_ids(self):
         for t in "abc":
@@ -107,7 +156,8 @@ class TestLibrary(Base):
 
     def test_blank_ids_do_not_collide_with_explicit(self):
         self.write_csv("id,title\n,blank\n1,explicit\n")
-        self.assertEqual(import_csv(self.b, self.csv), {"imported": 2, "skipped": 0})
+        self.assertEqual(import_csv(self.b, self.csv),
+                         {"imported": 2, "skipped": 0, "renumbered": []})
         self.assertEqual(self.b.get(1)["title"], "explicit")
         self.assertEqual(self.b.get(2)["title"], "blank")
 
@@ -178,7 +228,11 @@ class TestLibrary(Base):
     def test_restore_direct(self):
         r = self.b.restore([{"id": 3, "title": "x", "done": True, "created": "2026-01-01T00:00:00Z"},
                             {"title": "y"}])
-        self.assertEqual(r, {"imported": [3, 4], "skipped": []})
+        self.assertEqual(r, {"imported": [3, 4], "skipped": [], "renumbered": []})
+        c = TaskStore(self.tmp / "c.json")
+        self.assertEqual(c.restore([]), {"imported": [], "skipped": [], "renumbered": []})
+        self.assertEqual(c.restore([{"id": 5, "title": "First"}, {"id": 5, "title": "Second"}]),
+                         {"imported": [5, 6], "skipped": [], "renumbered": [[5, 6]]})
         with self.assertRaises(ValidationError):
             self.b.restore([{"title": "ok"}, {"title": "x", "done": "true"}])
         self.assertEqual(len(self.b.list()), 2)
@@ -198,6 +252,17 @@ class TestCLI(Base):
         self.assertEqual(self.b.list(), self.a.list())
         r = run_cli(self.b.path, "import", str(self.csv))
         self.assertEqual(r.stdout, "Imported 0 tasks, skipped 2 duplicates\n")
+
+    def test_renumber_message(self):
+        self.b.add("Original")
+        self.write_csv("id,title,done\n1,Replacement,true\n2,New,false\n")
+        r = run_cli(self.b.path, "import", str(self.csv))
+        self.assertEqual((r.returncode, r.stdout), (0,
+            "Imported 2 tasks, skipped 0 duplicates\n"
+            "Renumbered task 1 -> 3: id 1 is used by a different task\n"))
+        self.assertEqual((self.b.get(1)["title"], self.b.get(1)["done"]), ("Original", False))
+        self.assertEqual(self.b.get(2)["title"], "New")
+        self.assertEqual((self.b.get(3)["title"], self.b.get(3)["done"]), ("Replacement", True))
 
     def test_errors(self):
         self.write_csv("title,done\nA,true\n,false\n")

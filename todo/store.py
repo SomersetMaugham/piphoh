@@ -257,12 +257,17 @@ class TaskStore:
         Each record is a dict with ``title`` and optional ``id`` (positive int
         or None -> new id), ``done`` (bool, default False), ``created``
         (``YYYY-MM-DDTHH:MM:SSZ`` or None -> now) plus create fields accepted by
-        ``_validate_create``. A record whose id already exists in the store or
-        repeats an earlier record's id is skipped (never overwritten). Any
+        ``_validate_create``. Existing tasks are never overwritten. A record
+        whose explicit id N is already held (by a store task or an earlier
+        record) is skipped if it is the *same task* -- it carries an explicit
+        ``created`` equal to that task's and the same stripped title (done/due/
+        priority ignored) -- and otherwise renumbered to a fresh id. Any
         invalid record raises ValidationError (message prefixed ``record <n>:``,
-        1-based) and nothing is written. Explicit ids are placed first; blank-id
-        records then get fresh ids above every existing and imported id.
-        Returns ``{"imported": [ids], "skipped": [ids]}``.
+        1-based) and nothing is written. Non-colliding explicit ids are placed
+        first; renumbered and blank-id records then get fresh ids, in record
+        order, above every existing and imported id.
+        Returns ``{"imported": [ids], "skipped": [ids],
+        "renumbered": [[old, new], ...]}`` (imported in record order).
         """
         prepared = []
         for n, rec in enumerate(records, 1):
@@ -275,22 +280,30 @@ class TaskStore:
                 raise err from exc
         with self._lock:
             data = self._load()
-            taken = {t["id"] for t in data["tasks"]}
+            holders = {t["id"]: t for t in data["tasks"]}  # id -> task holding it
             placed = {}  # index -> task
             skipped = []
-            for i, (tid, task) in enumerate(prepared):
+            fresh = []  # indices needing a fresh id (blank or renumbered)
+            for i, (tid, task, explicit_created) in enumerate(prepared):
                 if tid is None:
+                    fresh.append(i)
                     continue
-                if tid in taken:
+                holder = holders.get(tid)
+                if holder is None:
+                    placed[i] = holders[tid] = dict(task, id=tid)
+                elif (explicit_created and task["created"] == holder["created"]
+                      and task["title"].strip() == holder["title"].strip()):
                     skipped.append(tid)
-                    continue
-                taken.add(tid)
-                placed[i] = dict(task, id=tid)
+                else:
+                    fresh.append(i)
             next_id = max([data["next_id"]] + [t["id"] + 1 for t in placed.values()])
-            for i, (tid, task) in enumerate(prepared):
-                if tid is None:
-                    placed[i] = dict(task, id=next_id)
-                    next_id += 1
+            renumbered = []
+            for i in fresh:
+                tid, task, _ = prepared[i]
+                placed[i] = dict(task, id=next_id)
+                if tid is not None:
+                    renumbered.append([tid, next_id])
+                next_id += 1
             new_tasks = [placed[i] for i in sorted(placed)]
             imported = [t["id"] for t in new_tasks]
             if new_tasks:
@@ -298,7 +311,7 @@ class TaskStore:
                 data["tasks"].sort(key=lambda t: t["id"])
                 data["next_id"] = next_id
                 self._save(data)
-            return {"imported": imported, "skipped": skipped}
+            return {"imported": imported, "skipped": skipped, "renumbered": renumbered}
 
     def _prepare_record(self, rec) -> tuple:
         if not isinstance(rec, dict):
@@ -311,6 +324,7 @@ class TaskStore:
         if not isinstance(done, bool):
             raise ValidationError("done must be a boolean")
         created = rec.pop("created", None)
+        explicit_created = created is not None
         if created is None:
             created = _now()
         elif not isinstance(created, str) or not CREATED_RE.match(created):
@@ -320,4 +334,4 @@ class TaskStore:
         clean = self._validate_create(rec.pop("title"), rec)
         task = {"id": tid, "title": clean.pop("title"), "done": done, "created": created}
         task.update(clean)
-        return tid, task
+        return tid, task, explicit_created
