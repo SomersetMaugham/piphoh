@@ -1,7 +1,8 @@
-"""Core CLI commands: add, list, done, rm (registered via todo.cli.COMMAND_MODULES)."""
+"""Core CLI commands: add, list, done, rm, edit (registered via todo.cli.COMMAND_MODULES)."""
 
 import json
 
+from todo.errors import ValidationError
 from todo.store import DEFAULT_PRIORITY, PRIORITIES, TaskStore
 
 
@@ -52,6 +53,23 @@ def cmd_rm(args) -> int:
     return 0
 
 
+def cmd_edit(args) -> int:
+    fields = {}
+    if args.title is not None:
+        fields["title"] = args.title
+    if args.no_due:
+        fields["due"] = None
+    elif args.due is not None:
+        fields["due"] = args.due
+    if args.priority is not None:
+        fields["priority"] = args.priority
+    if not fields:
+        raise ValidationError("nothing to change (use --title, --due, --no-due or --priority)")
+    task = _store(args).update(args.id, **fields)
+    print(f"Updated task {task['id']}: {task['title']}")
+    return 0
+
+
 def register(subparsers) -> None:
     p = subparsers.add_parser("add", help="add a task")
     p.add_argument("title", help="task title")
@@ -75,3 +93,12 @@ def register(subparsers) -> None:
     p = subparsers.add_parser("rm", help="delete a task")
     p.add_argument("id", type=int, help="task id")
     p.set_defaults(func=cmd_rm)
+
+    p = subparsers.add_parser("edit", help="change a task's title, due date or priority")
+    p.add_argument("id", type=int, help="task id")
+    p.add_argument("--title", default=None, help="new title")
+    due = p.add_mutually_exclusive_group()
+    due.add_argument("--due", metavar="YYYY-MM-DD", default=None, help="new due date")
+    due.add_argument("--no-due", action="store_true", help="remove the due date")
+    p.add_argument("--priority", choices=PRIORITIES, default=None, help="new priority")
+    p.set_defaults(func=cmd_edit)
