@@ -91,7 +91,11 @@ def _parse_row(header, cells) -> dict:
 
 
 def import_csv(store: TaskStore, path) -> dict:
-    """Load tasks from ``path``; return ``{"imported": n, "skipped": m}``."""
+    """Load tasks from ``path``.
+
+    Returns ``{"imported": n, "skipped": m, "renumbered": [[old, new], ...]}``;
+    ``n`` includes renumbered rows (see ``TaskStore.restore``).
+    """
     rows = _read_rows(path)
     if not rows:
         raise ValidationError(f"{path}: empty file (no header)")
@@ -120,7 +124,11 @@ def import_csv(store: TaskStore, path) -> dict:
         if idx is None:
             raise
         raise ValidationError(f"{path}:{lines[idx]}: {exc.reason}") from exc
-    return {"imported": len(result["imported"]), "skipped": len(result["skipped"])}
+    return {
+        "imported": len(result["imported"]),
+        "skipped": len(result["skipped"]),
+        "renumbered": result["renumbered"],
+    }
 
 
 def _store(args) -> TaskStore:
@@ -136,6 +144,8 @@ def cmd_export(args) -> int:
 def cmd_import(args) -> int:
     r = import_csv(_store(args), args.path)
     print(f"Imported {r['imported']} tasks, skipped {r['skipped']} duplicates")
+    for old, new in r["renumbered"]:
+        print(f"Renumbered task {old} -> {new}: id {old} is used by a different task")
     return 0
 
 
