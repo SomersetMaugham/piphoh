@@ -16,9 +16,16 @@ from todo.csvio import COLUMNS, export_csv, import_csv
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def run_cli(store_path, *args):
-    env = dict(os.environ, TODO_FILE=str(store_path), PYTHONDONTWRITEBYTECODE="1")
-    return subprocess.run([sys.executable, "-m", "todo", *args], cwd=ROOT, env=env,
+def run_cli(store_path, *args, use_env=False):
+    """Run the CLI against store_path via --file (default) or TODO_FILE."""
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    env.pop("TODO_FILE", None)
+    if use_env:
+        env["TODO_FILE"] = str(store_path)
+        argv = list(args)
+    else:
+        argv = ["--file", str(store_path), *args]
+    return subprocess.run([sys.executable, "-m", "todo", *argv], cwd=ROOT, env=env,
                           capture_output=True, text=True, timeout=30)
 
 
@@ -211,6 +218,26 @@ class TestCLI(Base):
         run_cli(self.b.path, "import", str(self.csv))
         data = json.loads(self.b.path.read_text())
         self.assertEqual(data["next_id"], 11)
+        r = run_cli(self.b.path, "add", "next")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.b.get(11)["title"], "next")
+
+    def test_title_only_import_then_cli_add(self):
+        for t in "abc":
+            self.b.add(t)
+        self.write_csv("title\nx\ny\nz\n")
+        r = run_cli(self.b.path, "import", str(self.csv))
+        self.assertEqual(r.stdout, "Imported 3 tasks, skipped 0 duplicates\n")
+        run_cli(self.b.path, "add", "seventh")
+        self.assertEqual(self.b.get(7)["title"], "seventh")
+
+    def test_todo_file_env_still_works(self):
+        self.a.add("env task")
+        r = run_cli(self.a.path, "export", str(self.csv), use_env=True)
+        self.assertEqual((r.returncode, r.stdout), (0, f"Exported 1 tasks to {self.csv}\n"))
+        r = run_cli(self.b.path, "import", str(self.csv), use_env=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.b.list(), self.a.list())
 
 
 if __name__ == "__main__":

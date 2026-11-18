@@ -1,9 +1,8 @@
 """CSV export/import (``todo export FILE`` / ``todo import FILE``)."""
 
 import csv
-import sys
 
-from todo.errors import StoreError, TodoError, ValidationError
+from todo.errors import StoreError, ValidationError
 from todo.store import TaskStore
 
 COLUMNS = ("id", "title", "done", "created", "due", "priority")
@@ -129,21 +128,13 @@ def _store(args) -> TaskStore:
 
 
 def cmd_export(args) -> int:
-    try:
-        n = export_csv(_store(args), args.path)
-    except TodoError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+    n = export_csv(_store(args), args.path)  # TodoError -> cli.main prints "error:", exit 1
     print(f"Exported {n} tasks to {args.path}")
     return 0
 
 
 def cmd_import(args) -> int:
-    try:
-        r = import_csv(_store(args), args.path)
-    except TodoError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+    r = import_csv(_store(args), args.path)
     print(f"Imported {r['imported']} tasks, skipped {r['skipped']} duplicates")
     return 0
 
