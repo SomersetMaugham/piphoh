@@ -9,6 +9,7 @@ Subcommands:
   verify    <label> [--root DIR] [--allow GLOB]  compare source to a snapshot
   board     <plan.json> [--set ID=STAGE ...]   show / update slice stages and WIP
   testguard <branch> [--tests-root DIR]  QA-owned test dirs on a branch must match their tests branches
+  brief     <plan.json> <slice_id> [--role dev|qa-pre|qa-verify|pm]  print a self-contained subagent brief
 
 Plan file (JSON):
 {
@@ -62,7 +63,14 @@ def load_plan(path: str) -> dict:
     plan.setdefault("idle_threshold", 0.2)
     for s in plan.get("slices", []):
         s.setdefault("deps", [])
-        s.setdefault("area", s["id"] if "id" in s else "")
+        raw_areas = s.get("areas")
+        if raw_areas is None:
+            raw_area = s.get("area")
+            raw_areas = [raw_area] if raw_area else ([s["id"]] if "id" in s else [])
+        elif isinstance(raw_areas, str):
+            raw_areas = [raw_areas]
+        s["areas"] = [str(a) for a in raw_areas if a]
+        s["area"] = s["areas"][0] if s["areas"] else ""
         s.setdefault("pm_ok", False)
         for k in ("spec", "prewrite", "build", "verify"):
             s.setdefault(k, d[k])
@@ -139,8 +147,8 @@ def validate(plan: dict, plan_path: str) -> tuple[list[str], list[str]]:
     if team["qa"] < 1:
         warnings.append("team.qa is 0: the PM or orchestrator must verify; never let a builder approve its own slice")
     if team["dev"] > 1:
-        areas = [s["area"] for s in slices]
-        if len(set(areas)) == 1:
+        all_areas = {a for s in slices for a in s["areas"]}
+        if len(all_areas) <= 1:
             warnings.append("all slices share one area: parallel dev lanes will conflict; split areas")
     # contracts
     root = Path(plan_path).resolve().parent
@@ -209,7 +217,8 @@ def build_tasks(plan: dict) -> dict[str, Task]:
             [f"{sid}:SPEC"] + [f"{d}:{gate_of(d)}" for d in s["deps"]],
         )
         tasks[f"{sid}:VERIFY"] = Task(
-            f"{sid}:VERIFY", sid, "VERIFY", s["verify"], [f"{sid}:BUILD", f"{sid}:PREWRITE"]
+            f"{sid}:VERIFY", sid, "VERIFY", s["verify"],
+            [f"{sid}:BUILD", f"{sid}:PREWRITE"] + [f"{d}:VERIFY" for d in s["deps"]],
         )
     return tasks
 
@@ -299,7 +308,7 @@ def simulate(plan: dict, team: dict | None = None) -> dict:
                  and all(p in done for p in x.preds)]
         # verification first (fast feedback frees WIP), then longest remaining path
         ready.sort(key=lambda x: (x.kind != "VERIFY", -x.tail, x.key))
-        busy_areas = {slices[k.split(":")[0]]["area"] for k in running if k.endswith(":BUILD")}
+        busy_areas = {a for k in running if k.endswith(":BUILD") for a in slices[k.split(":")[0]]["areas"]}
         in_flight = {k.split(":")[0] for k in list(running) + list(done)
                      if k.endswith(":BUILD")} - {k.split(":")[0] for k in done if k.endswith(":VERIFY")}
         for w in sorted(workers, key=lambda w: (w.role != "dev", w.name)):
@@ -317,7 +326,7 @@ def simulate(plan: dict, team: dict | None = None) -> dict:
                 if not ok:
                     continue
                 if x.kind == "BUILD":
-                    if slices[x.slice_id]["area"] in busy_areas:
+                    if any(a in busy_areas for a in slices[x.slice_id]["areas"]):
                         continue
                     if wip_limit and x.slice_id not in in_flight and len(in_flight) >= wip_limit:
                         continue
@@ -332,7 +341,7 @@ def simulate(plan: dict, team: dict | None = None) -> dict:
             w.busy_until = fin
             w.log.append((t, fin, pick.key))
             if pick.kind == "BUILD":
-                busy_areas.add(slices[pick.slice_id]["area"])
+                busy_areas.update(slices[pick.slice_id]["areas"])
                 in_flight.add(pick.slice_id)
         future = [f for f in running.values() if f > t + 1e-9]
         if not future and len(done) < len(tasks) and not running:
@@ -500,6 +509,33 @@ def tree_files(repo: Path, ref: str, root: str) -> dict[str, str]:
     return out
 
 
+def _is_merged(repo: Path, ancestor: str, branch: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, branch],
+        capture_output=True,
+    ).returncode == 0
+
+
+def _blob_history(repo: Path, branches: set[str], path: str) -> dict[str, set[str]]:
+    """Return {branch: set_of_blob_ids} for `path` across `branches`."""
+    res: dict[str, set[str]] = {}
+    for tb in sorted(branches):
+        blobs: set[str] = set()
+        try:
+            out = git(repo, "log", "--format=", "--raw", "--no-renames", tb, "--", path)
+        except subprocess.CalledProcessError:
+            res[tb] = blobs
+            continue
+        for line in out.splitlines():
+            if not line.startswith(":"):
+                continue
+            parts = line.split()
+            if len(parts) >= 4:
+                blobs.add(parts[3])
+        res[tb] = blobs
+    return res
+
+
 def testguard(repo: Path, branch: str, tests_root: str, prefix: str = "harness/") -> int:
     """Every QA-owned slice test dir on `branch` must match that slice's tests branch."""
     root = tests_root.rstrip("/")
@@ -517,27 +553,22 @@ def testguard(repo: Path, branch: str, tests_root: str, prefix: str = "harness/"
             print(f"UNOWNED  {root}/{sdir}/ has no {prefix}{sdir}-tests branch (cannot verify)")
             continue
         ref_files = tree_files(repo, ref, f"{root}/{sdir}")
+        ref_merged = _is_merged(repo, ref, branch)
         for path in sorted(set(paths) | set(ref_files)):
             mine, theirs = files.get(path), ref_files.get(path)
             if mine == theirs:
                 continue
             if mine is None:
-                print(f"MISSING  {path} (on {ref}, not on {branch}: merge {ref})")
-                stale += 1
+                if ref_merged:
+                    print(f"DELETED  {path} (present on merged {ref}, removed on {branch})")
+                    bad += 1
+                else:
+                    print(f"MISSING  {path} (on {ref}, not on {branch}: merge {ref})")
+                    stale += 1
                 continue
-            history = set()  # every version QA ever committed on any tests branch counts as QA-authored
-            for tb in sorted(branches):
-                for c in git(repo, "rev-list", tb, "--", path).split():
-                    try:
-                        history.add(git(repo, "rev-parse", f"{c}:{path}").strip())
-                    except subprocess.CalledProcessError:
-                        pass
-            own = set()
-            for c in git(repo, "rev-list", ref, "--", path).split():
-                try:
-                    own.add(git(repo, "rev-parse", f"{c}:{path}").strip())
-                except subprocess.CalledProcessError:
-                    pass
+            hist_map = _blob_history(repo, branches, path)
+            history = {b for bs in hist_map.values() for b in bs}
+            own = hist_map.get(ref, set())
             if mine in own:
                 print(f"STALE    {path} (older version of {ref}: merge it again)")
                 stale += 1
@@ -548,7 +579,7 @@ def testguard(repo: Path, branch: str, tests_root: str, prefix: str = "harness/"
                 print(f"MODIFIED {path} (differs from every version on any tests branch)")
                 bad += 1
     if bad:
-        print(f"VIOLATION: {bad} QA-owned test file(s) edited on {branch}")
+        print(f"VIOLATION: {bad} QA-owned test file(s) edited or deleted on {branch}")
         return 3
     notes = []
     if stale:
@@ -588,6 +619,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("board"); p.add_argument("plan"); p.add_argument("--set", nargs="*", default=[])
     p = sub.add_parser("testguard"); p.add_argument("branch"); p.add_argument("--tests-root", default="tests/acceptance")
     p.add_argument("--repo", default=".")
+    p = sub.add_parser("brief"); p.add_argument("plan"); p.add_argument("slice_id")
+    p.add_argument("--role", choices=("dev", "qa-pre", "qa-verify", "pm"), default="dev")
     a = ap.parse_args(argv)
 
     def remaining(plan: dict) -> dict:
@@ -726,8 +759,8 @@ def main(argv: list[str] | None = None) -> int:
         ready = [s["id"] for s in plan["slices"]
                  if board[s["id"]] == "specced"
                  and all(board.get(d) in ok_stages[by_id.get(d, {}).get("gate", plan["dep_gate"])] for d in s["deps"])]
-        busy = {by_id[k]["area"] for k, v in board.items() if v == "building" and k in by_id}
-        blocked_by_area = [i for i in ready if by_id[i]["area"] in busy]
+        busy = {a for k, v in board.items() if v == "building" and k in by_id for a in by_id[k]["areas"]}
+        blocked_by_area = [i for i in ready if any(a in busy for a in by_id[i]["areas"])]
         ready = [i for i in ready if i not in blocked_by_area]
         if lim and wip >= lim:
             blocked_by_area += [f"(WIP limit) {i}" for i in ready]
@@ -739,6 +772,40 @@ def main(argv: list[str] | None = None) -> int:
             print("waiting:        " + ", ".join(blocked_by_area) + "  (area busy or WIP full)")
         print("needs spec:     " + (", ".join(need_spec) or "-"))
         print("needs verify:   " + (", ".join(need_verify) or "-"))
+        return 0
+
+    if a.cmd == "brief":
+        plan = load_plan(a.plan)
+        by_id = {s["id"]: s for s in plan["slices"]}
+        if a.slice_id not in by_id:
+            print(f"unknown slice {a.slice_id}", file=sys.stderr)
+            return 1
+        hdir = Path(a.plan).resolve().parent
+        sid = a.slice_id
+        sdir = sid.lower()
+        wt = hdir / "wt" / sid
+        if a.role == "dev":
+            print(f"Role: harness-developer. Work ONLY in {wt} on branch harness/{sid}.\n"
+                  f"Contract: {hdir / 'contracts' / f'{sid}.md'} (read fully).\n"
+                  f"Handoff: {hdir / 'handoff.md'} (preserve verified behaviors; check decisions).\n"
+                  f"Pre-written acceptance tests: tests/acceptance/{sdir}/ (if present; never edit).\n"
+                  f"Run tests from {wt} with PYTHONDONTWRITEBYTECODE=1 and commit to harness/{sid}.\n"
+                  f"Reply with: summary, files changed, test command + result, contract issues.")
+        elif a.role == "qa-pre":
+            print(f"Role: harness-qa. Pre-write executable acceptance tests for {sid} from {hdir / 'contracts' / f'{sid}.md'}.\n"
+                  f"Work ONLY in {hdir / 'wt' / f'qat-{sid}'} on branch harness/{sid}-tests.\n"
+                  f"Write tests under tests/acceptance/{sdir}/, run with PYTHONDONTWRITEBYTECODE=1, commit to harness/{sid}-tests.\n"
+                  f"Reply with: test files written and how to run them.")
+        elif a.role == "qa-verify":
+            print(f"Role: harness-qa. Verify slice {sid} in {wt} (branch harness/{sid}, read-only).\n"
+                  f"Contract: {hdir / 'contracts' / f'{sid}.md'}. Handoff: {hdir / 'handoff.md'}.\n"
+                  f"Run acceptance tests in tests/acceptance/{sdir}/ and full suite from {wt} with PYTHONDONTWRITEBYTECODE=1.\n"
+                  f"Write qa_report.md and qa_report.json in {hdir / 'evidence' / sid}.\n"
+                  f"Reply with: status and report paths.")
+        else:
+            print(f"Role: harness-planner. Read {hdir / 'brief.md'}, {hdir / 'handoff.md'}, {hdir / 'plan.json'}.\n"
+                  f"Write/refresh contracts in {hdir / 'contracts'} (focus: {sid}). Do not edit source.\n"
+                  f"Reply with: files written, decisions, open questions.")
         return 0
     return 0
 
